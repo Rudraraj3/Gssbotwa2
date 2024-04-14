@@ -1,4 +1,3 @@
-
 require('./config')
 const config = require('./config.js');
 const { default: gssConnect, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, generateForwardMessageContent, prepareWAMessageMedia, generateWAMessageFromContent, generateMessageID, downloadContentFromMessage, makeInMemoryStore, jidDecode, proto, getAggregateVotesInPollMessage } = require("@whiskeysockets/baileys")
@@ -10,11 +9,13 @@ const chalk = require('chalk')
 const FileType = require('file-type')
 const path = require('path')
 const _ = require('lodash')
+const moment = require('moment-timezone')
 const axios = require('axios')
 const PhoneNumber = require('awesome-phonenumber')
 const { imageToWebp, videoToWebp, writeExifImg, writeExifVid } = require('./lib/exif')
 const { smsg, isUrl, generateMessageTag, getBuffer, getSizeMedia, fetchJson, await, sleep } = require('./lib/myfunc')
-
+const fetch = require('node-fetch');
+ 
 var low
 try {
   low = require('lowdb')
@@ -24,6 +25,7 @@ try {
 
 const { Low, JSONFile } = low
 const mongoDB = require('./lib/mongoDB')
+const { emojis, doReact } = require('./lib/autoreact.js');
 
 global.api = (name, path = '/', query = {}, apikeyqueryname) => (name in global.APIs ? global.APIs[name] : name) + path + (query || apikeyqueryname ? '?' + new URLSearchParams(Object.entries({ ...query, ...(apikeyqueryname ? { [apikeyqueryname]: global.APIKeys[name in global.APIs ? global.APIs[name] : name] } : {}) })) : '')
 
@@ -63,6 +65,8 @@ if (global.db) setInterval(async () => {
     if (global.db.data) await global.db.write()
   }, 30 * 1000)
 
+
+
 async function startgss() {
     const { state, saveCreds } = await useMultiFileAuthState(`./${sessionName}`)
 
@@ -85,8 +89,19 @@ async function startgss() {
     store.bind(gss.ev)
     
 
+gss.ev.on('messages.delete', async (deletedMessages) => {
+    if (chats.antidelete) {
+        for (const deletedMessage of deletedMessages) {
+            if (deletedMessage.content) {
+                const deletedMessageContent = deletedMessage.content;
 
-    gss.ev.on('messages.upsert', async chatUpdate => {
+                await gss.sendMessage(m.chat, { text: deletedMessageContent.text });
+            }
+        }
+    }
+});
+
+gss.ev.on('messages.upsert', async chatUpdate => {
         //console.log(JSON.stringify(chatUpdate, undefined, 2))
         try {
         mek = chatUpdate.messages[0]
@@ -102,7 +117,24 @@ async function startgss() {
             console.log(err)
         }
     })
-    
+
+
+
+
+gss.ev.on('messages.upsert', async chatUpdate => {
+  try {
+    if (global.autoreact) {
+      const mek = chatUpdate.messages[0];
+      console.log(mek);
+      if (mek.message && !mek.key.fromMe) {
+        const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+        await doReact(randomEmoji, mek, gss);
+      }
+    }
+  } catch (err) {
+    console.error('Error during auto reaction:', err);
+  }
+});
 
 
 
@@ -135,9 +167,8 @@ gss.ev.on('messages.update', async chatUpdate => {
                     message: pollCreation,
                     pollUpdates: update.pollUpdates,
                 });
-                var toCmd = pollUpdate.filter(v => v.voters.length !== 0)[0]?.name;
-                if (toCmd == undefined) return;
-                var prefCmd = prefix + toCmd;
+                const tocommand = pollUpdate.filter(v => v.voters.length !== 0)[0]?.name;
+                if (!tocommand) return;
 
                 try {
                     setTimeout(async () => {
@@ -147,15 +178,78 @@ gss.ev.on('messages.update', async chatUpdate => {
                     console.error("Error deleting message:", error);
                 }
 
-                gss.appenTextMessage(prefCmd, chatUpdate);
+                gss.appenTextMessage(tocommand, chatUpdate);
             }
         }
     }
 });
 
+ 
 
+/*WELCOME LEFT*/
+gss.ev.on('group-participants.update', async (anu) => {
+    if (global.welcome) {
+        console.log(anu);
+        try {
+            let metadata = await gss.groupMetadata(anu.id);
+            let participants = anu.participants;
 
-	
+            for (let num of participants) {
+                try {
+                    ppuser = await gss.profilePictureUrl(num, 'image');
+                } catch (err) {
+                    ppuser = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png?q=60';
+                }
+
+                // Welcome message
+                if (anu.action == 'add') {
+                    const userName = num.split('@')[0];
+                    const joinTime = moment.tz('Asia/Kolkata').format('HH:mm:ss');
+                    const joinDate = moment.tz('Asia/Kolkata').format('DD/MM/YYYY');
+                    const membersCount = metadata.participants.length;
+
+                    const welcomeMessage = `> Hello @${userName}! Welcome to *${metadata.subject}*.\n> You are the ${membersCount}th member.\n> Joined at: ${joinTime} on ${joinDate}`;
+
+                    gss.sendMessage(anu.id, {
+                        text: welcomeMessage,
+                        contextInfo: {
+                            externalAdReply: {
+                                showAdAttribution: false,
+                                title: userName,
+                                sourceUrl: ppuser,
+                                body: `${metadata.subject}`
+                            }
+                        }
+                    });
+                }
+                // Left message
+                else if (anu.action == 'remove') {
+                    const userName = num.split('@')[0];
+                    const leaveTime = moment.tz('Asia/Kolkata').format('HH:mm:ss');
+                    const leaveDate = moment.tz('Asia/Kolkata').format('DD/MM/YYYY');
+                    const membersCount = metadata.participants.length;
+
+                    const leftMessage = `> Goodbye @${userName} from ${metadata.subject}.\n> We are now ${membersCount} in the group.\n> Left at: ${leaveTime} on ${leaveDate}`;
+
+                    gss.sendMessage(anu.id, {
+                        text: leftMessage,
+                        contextInfo: {
+                            externalAdReply: {
+                                showAdAttribution: false,
+                                title: userName,
+                                sourceUrl: ppuser,
+                                body: `${metadata.subject}`
+                            }
+                        }
+                    });
+                }
+            }
+        } catch (err) {
+            console.log(err);
+        }
+    }
+});
+
 	
     // Setting
     gss.decodeJid = (jid) => {
@@ -196,7 +290,7 @@ gss.ev.on('messages.update', async chatUpdate => {
 	for (let i of kon) {
 	    list.push({
 	    	displayName: await gss.getName(i + '@s.whatsapp.net'),
-	    	vcard: `BEGIN:VCARD\nVERSION:3.0\nN:${await gss.getName(i + '@s.whatsapp.net')}\nFN:${await gss.getName(i + '@s.whatsapp.net')}\nitem1.TEL;waid=${i}:${i}\nitem1.X-ABLabel:Ponsel\nitem2.EMAIL;type=INTERNET:bsid4961@gmail.com\nitem2.X-ABLabel:Email\nEND:VCARD`
+	    	vcard: `BEGIN:VCARD\nVERSION:3.0\nN:${await gss.getName(i + '@s.whatsapp.net')}\nFN:${await gss.getName(i + '@s.whatsapp.net')}\nitem1.TEL;waid=${i}:${i}\nitem1.X-ABLabel:Phone\nEND:VCARD`
 	    })
 	}
 	gss.sendMessage(jid, { contacts: { displayName: `${list.length} Kontak`, contacts: list }, ...opts }, { quoted })
@@ -242,7 +336,7 @@ gss.ev.on('messages.update', async chatUpdate => {
     } else if (connection === "open") {
         // Add your custom message when the connection is open
         console.log('Connected...', update);
-        gss.sendMessage('917050906659@s.whatsapp.net', {
+        gss.sendMessage(gss.user.id, {
             text: `*hi bro! 🫡*\n_gss botwa v2 bot has successfully connected to the server_`
         });
     }
@@ -558,7 +652,7 @@ gss.ev.on('messages.update', async chatUpdate => {
 	    size: await getSizeMedia(data),
             ...type,
             data
-        }
+        } 
 
     }
 
@@ -568,10 +662,11 @@ gss.ev.on('messages.update', async chatUpdate => {
 startgss()
 
 
-let file = require.resolve(__filename)
+// Watching file changes and reloading module
+let file = require.resolve(__filename);
 fs.watchFile(file, () => {
-	fs.unwatchFile(file)
-	console.log(chalk.redBright(`Update ${__filename}`))
-	delete require.cache[file]
-	require(file)
-})
+    fs.unwatchFile(file);
+    console.log(chalk.redBright(`Update ${__filename}`));
+    delete require.cache[file];
+    require(file);
+});
